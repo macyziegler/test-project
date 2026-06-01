@@ -1,0 +1,43 @@
+stage,artist,start_time,end_time,popularity,genre
+Kinetic Field,Ina Nia,1:00pm,1:30pm,0.08,house
+Kinetic Field,Baggi,1:30pm,2:25pm,0.12,house
+Kinetic Field,No Thanks,2:25pm,3:25pm,0.15,house
+Kinetic Field,Korolova,3:25pm,4:25pm,0.30,melodic_house
+Kinetic Field,Funk Tribu,4:25pm,5:25pm,0.25,house
+Kinetic Field,Green Velvet B2B Alok,5:25pm,6:45pm,0.75,tech_house
+Kinetic Field,James Hype,6:45pm,7:55pm,0.80,house
+Kinetic Field,Sofi Tukker,7:55pm,9:05pm,0.85,indie_dance
+Kinetic Field,Subtronics,9:05pm,10:25pm,0.95,dubstep
+Kinetic Field,Dom Dolla,10:25pm,11:50pm,1.00,house
+Circuit Grounds,Discovery Project,1:00pm,2:15pm,0.08,edm
+Circuit Grounds,Hills,2:15pm,3:25pm,0.12,edm
+Circuit Grounds,Wuki,3:25pm,4:25pm,0.30,bass_house
+Circuit Grounds,Laszewo,4:25pm,5:25pm,0.15,edm
+Circuit Grounds,Seven Lions,5:25pm,6:40pm,0.88,melodic_bass
+Circuit Grounds,Max Styler,6:40pm,7:45pm,0.35,bass_house
+Circuit Grounds,The Outlaw,7:45pm,8:45pm,0.30,house
+Circuit Grounds,Chase & Status,8:45pm,9:45pm,0.78,dnb
+Circuit Grounds,Charlotte de Witte,9:45pm,10:45pm,0.95,techno
+Circuit Grounds,Knock2,10:45pm,11:55pm,0.90,bass_house
+Neon Garden,Dr. Greco,1:00pm,3:00pm,0.10,techno
+Neon Garden,Noise Mafia,3:00pm,4:30pm,0.15,techno
+Neon Garden,OTTA,4:30pm,6:00pm,0.20,techno
+Neon Garden,999999999,6:00pm,7:30pm,0.55,techno
+Neon Garden,Indira Paganotto,7:30pm,9:00pm,0.60,techno
+Neon Garden,Deborah De Luca,9:00pm,10:30pm,0.65,techno
+Neon Garden,Nico Moreno,10:30pm,12:00am,0.55,techno
+Stereo Bloom,Bad Girl Bailey,1:00pm,2:00pm,0.08,bass
+Stereo Bloom,Flozone,2:00pm,3:00pm,0.10,bass
+Stereo Bloom,Eater,3:00pm,4:15pm,0.15,bass
+Stereo Bloom,MPH,4:15pm,5:30pm,0.30,bass
+Stereo Bloom,Caspa,5:30pm,6:45pm,0.45,dubstep
+Stereo Bloom,YDG,6:45pm,8:00pm,0.35,riddim
+Stereo Bloom,ALLEYCVT,8:00pm,9:15pm,0.45,bass_house
+Stereo Bloom,Wilkinson,9:15pm,10:45pm,0.60,dnb
+Stereo Bloom,Subtronics B2B LevelUp,10:45pm,12:00am,0.88,dubstep
+Casa Bacardi,Jesse James,1:00pm,3:00pm,0.05,house
+Casa Bacardi,Leisan,3:00pm,5:00pm,0.05,house
+Casa Bacardi,Slugg,5:00pm,6:30pm,0.08,house
+Casa Bacardi,Ky William,6:30pm,8:00pm,0.10,house
+Casa Bacardi,Coco & Breezy,8:00pm,9:30pm,0.15,house
+Casa Bacardi,BOLO,9:30pm,11:00pm,0.12,house

@@ -1,0 +1,8 @@
+streamlit
+mesa
+numpy
+pandas
+plotly
+matplotlib
+pillow
+networkx
