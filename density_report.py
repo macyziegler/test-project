@@ -3,16 +3,16 @@ density_report.py — Detailed density output for every area at every time step.
 Saves to CSV for easy analysis in Excel.
 """
 from run_edc import stage_configs, time_to_step, GRID_SIZE, NUM_ATTENDEES, SCALE, STAGE_WEIGHTS, STAGE_WANDER_RATE, all_path_cells
-from model_edc import FestivalModel, Attendee
-from parse_kml import parse_kml, latlon_to_grid
+from simulation.model import FestivalModel, Attendee
+from data_io.parse_kml import parse_kml, latlon_to_grid
 import pandas as pd
 import numpy as np
 
 # --------------------------------------------------------------------------- #
 # PARSE MAP
 # --------------------------------------------------------------------------- #
-stages_geo, obstacles_geo, paths_geo, bounds = parse_kml("EDC Orlando Map.kml")
-grid_stages, grid_obstacles, grid_paths, obstacle_mask, mpc = latlon_to_grid(
+stages_geo, obstacles_geo, paths_geo, bounds, entry_exit = parse_kml("EDC Orlando Map.kml")
+grid_stages, grid_obstacles, grid_paths, obstacle_mask, mpc, entry_cells = latlon_to_grid(
     stages_geo, obstacles_geo, paths_geo, bounds, grid_size=GRID_SIZE
 )
 stage_pos = {s["name"]: (s["x"], s["y"]) for s in grid_stages}

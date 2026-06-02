@@ -6,3 +6,5 @@ plotly
 matplotlib
 pillow
 networkx
+pytest==8.3.5
+hypothesis==6.131.15

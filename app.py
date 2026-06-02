@@ -11,9 +11,88 @@ import tempfile
 import os
 import math
 
-from model_edc import FestivalModel, Attendee, Stage
-from parse_kml import parse_kml, latlon_to_grid
-from path_flow import PathFlowModel
+from simulation.model import FestivalModel, Attendee, Stage
+from data_io.parse_kml import parse_kml, latlon_to_grid
+from simulation.path_flow import PathFlowModel
+from data_io.parse_lineup import parse_lineup, parse_time, time_to_step, step_to_time, LineupParseResult
+from data_io.path_connections import derive_path_connections
+from config.defaults import *
+
+
+# --------------------------------------------------------------------------- #
+# HELPERS
+# --------------------------------------------------------------------------- #
+
+def _classify_density(density: float) -> str:
+    """Classify a path density value using Fruin Level of Service thresholds."""
+    if density >= DENSITY_HIGH_MAX:
+        return "CRITICAL"
+    elif density >= DENSITY_NORMAL_MAX:
+        return "HIGH"
+    return "Normal"
+
+
+def build_bottleneck_events(df_crowd: pd.DataFrame, start_hour: int) -> list[dict]:
+    """Build a list of bottleneck events from simulation results.
+    
+    Returns events sorted by step, then density descending.
+    Each event: {path, step, time, density, classification}
+    """
+    events = []
+    path_density_cols = [c for c in df_crowd.columns if c.endswith("_density")]
+    for col in path_density_cols:
+        path_name = col.replace("path_", "").replace("_density", "")
+        for _, row in df_crowd.iterrows():
+            density = row[col]
+            if density >= DENSITY_NORMAL_MAX:
+                events.append({
+                    "path": path_name,
+                    "step": int(row["step"]),
+                    "time": row["time"],
+                    "density": round(density, 3),
+                    "classification": _classify_density(density),
+                })
+    events.sort(key=lambda e: (e["step"], -e["density"]))
+    return events
+
+
+def detect_crossover_periods(stage_configs: list[dict], total_steps: int, start_hour: int) -> list[dict]:
+    """Detect crossover periods — windows where 2+ set changes happen within CROSSOVER_WINDOW_STEPS.
+    
+    Returns list of {start_step, end_step, start_time, end_time, set_changes}
+    """
+    # collect all set change steps
+    set_changes = []
+    for cfg in stage_configs:
+        for slot in cfg["schedule"]:
+            set_changes.append({
+                "step": slot["start"],
+                "stage": cfg["name"],
+                "artist": slot["artist"],
+                "time": step_to_time(slot["start"], start_hour),
+            })
+    set_changes.sort(key=lambda x: x["step"])
+    
+    crossovers = []
+    seen_windows = set()
+    for i, change in enumerate(set_changes):
+        window_start = change["step"]
+        window_end = window_start + CROSSOVER_WINDOW_STEPS
+        # find all changes in this window
+        in_window = [c for c in set_changes if window_start <= c["step"] < window_end]
+        if len(in_window) >= 2:
+            key = (window_start, window_end)
+            if key not in seen_windows:
+                seen_windows.add(key)
+                crossovers.append({
+                    "start_step": window_start,
+                    "end_step": window_end,
+                    "start_time": step_to_time(window_start, start_hour),
+                    "end_time": step_to_time(min(window_end, total_steps), start_hour),
+                    "set_changes": in_window,
+                })
+    return crossovers
+
 
 # --------------------------------------------------------------------------- #
 # PAGE CONFIG
@@ -41,48 +120,6 @@ attendance = st.sidebar.number_input("Total Attendance", min_value=1000, max_val
 num_agents = st.sidebar.slider("Simulation Agents", min_value=500, max_value=5000, value=2000, step=500,
                                 help="More agents = more accurate but slower. 2000 is a good balance.")
 grid_size = 200
-
-# --------------------------------------------------------------------------- #
-# HELPER FUNCTIONS
-# --------------------------------------------------------------------------- #
-def time_to_step(hour, minute=0, start_hour=None):
-    """Convert 24h clock time to step. Each step = 5 minutes."""
-    total_min = (hour - start_hour) * 60 + minute
-    return max(1, int(total_min / 5) + 1)
-
-def step_to_time(step, start_hour):
-    total_min = (step - 1) * 5
-    hour = start_hour + total_min // 60
-    minute = total_min % 60
-    display_hour = hour if hour <= 12 else hour - 12
-    if display_hour == 0:
-        display_hour = 12
-    period = "AM" if hour < 12 or hour >= 24 else "PM"
-    return f"{display_hour}:{minute:02d} {period}"
-
-def parse_time(time_str):
-    """Parse time string like '3:00pm' or '15:00' to (hour24, minute)."""
-    time_str = time_str.strip().lower().replace(" ", "")
-    is_pm = "pm" in time_str
-    is_am = "am" in time_str
-    time_str = time_str.replace("pm", "").replace("am", "")
-
-    if ":" in time_str:
-        parts = time_str.split(":")
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
-    else:
-        hour = int(time_str)
-        minute = 0
-
-    if is_pm and hour != 12:
-        hour += 12
-    elif is_am and hour == 12:
-        hour = 24  # midnight end-of-day, not start-of-day
-    elif is_am and hour < 6:
-        hour += 24  # early morning = next day (1am-5am)
-
-    return hour, minute
 
 # --------------------------------------------------------------------------- #
 # LINEUP CSV FORMAT HELP
@@ -273,51 +310,16 @@ if kml_file and lineup_file:
         all_times.append(h * 60 + m)
 
     start_hour = min(all_times) // 60
-    end_minutes = max(all_times)
-    # stop at 11:40 PM to avoid end-of-festival noise
-    cutoff_minutes = min(end_minutes, 23 * 60 + 40)  # 11:40 PM = 23:40
-    total_steps = max(1, (cutoff_minutes - start_hour * 60) // 5)
 
-    stage_configs = []
-    for stage_name in df_lineup["stage"].unique():
-        if stage_name not in stage_pos:
-            st.warning(f"Stage '{stage_name}' in lineup not found in KML. Skipping.")
-            continue
-
-        stage_df = df_lineup[df_lineup["stage"] == stage_name].sort_values("start_time")
-        schedule = []
-        prev_genre = None
-
-        for _, row in stage_df.iterrows():
-            sh, sm = parse_time(row["start_time"])
-            eh, em = parse_time(row["end_time"])
-
-            entry = {
-                "artist": row["artist"],
-                "popularity": float(row["popularity"]),
-                "start": time_to_step(sh, sm, start_hour),
-                "end": time_to_step(eh, em, start_hour),
-            }
-
-            if "genre" in row and pd.notna(row.get("genre")):
-                entry["genre"] = row["genre"]
-                if prev_genre and prev_genre != row["genre"]:
-                    # clash rate = 1 - similarity
-                    sim = genre_similarity.get(
-                        (prev_genre, row["genre"]),
-                        genre_similarity.get((row["genre"], prev_genre), 0.0)
-                    )
-                    entry["genre_clash"] = 1.0 - sim
-                prev_genre = row["genre"]
-
-            schedule.append(entry)
-
-        stage_configs.append({
-            "name": stage_name,
-            "x": stage_pos[stage_name][0],
-            "y": stage_pos[stage_name][1],
-            "schedule": schedule,
-        })
+    lineup_result = parse_lineup(df_lineup, stage_pos, genre_similarity, start_hour)
+    for err in lineup_result.errors:
+        st.error(err)
+    if not lineup_result.success:
+        st.stop()
+    for warn in lineup_result.warnings:
+        st.warning(warn)
+    stage_configs = lineup_result.stage_configs
+    total_steps = lineup_result.total_steps
 
     # combine path cells and build route info
     all_path_cells = set()
@@ -325,6 +327,27 @@ if kml_file and lineup_file:
     for p in grid_paths:
         all_path_cells.update(p["cells"])
         path_routes.append({"name": p["name"], "waypoints": p["waypoints"]})
+
+    # --------------------------------------------------------------------------- #
+    # DERIVE PATH-TO-STAGE CONNECTIONS (Requirement 3.3 — shown before simulation)
+    # --------------------------------------------------------------------------- #
+    derived_configs = derive_path_connections(grid_paths, grid_stages, meters_per_cell, proximity_threshold_cells=DEFAULT_PROXIMITY_THRESHOLD_CELLS)
+    derived_lookup = {cfg["name"]: cfg for cfg in derived_configs}
+
+    # display any warnings from connection derivation
+    for cfg in derived_configs:
+        for warning_msg in cfg.get("warnings", []):
+            st.warning(f"⚠️ Path connection warning: {warning_msg}")
+
+    # show detected connections so the user can verify them before running
+    with st.expander("🔗 Detected Path-to-Stage Connections"):
+        for cfg in derived_configs:
+            connects = cfg.get("connects", [])
+            if connects:
+                pairs = ", ".join(f"{a} ↔ {b}" for a, b in connects if connects.index((a, b)) % 2 == 0)
+                st.markdown(f"**{cfg['name']}** ({cfg['length_m']:.0f} m): {pairs}")
+            else:
+                st.markdown(f"**{cfg['name']}**: _(no connections detected)_")
 
     # --------------------------------------------------------------------------- #
     # RUN SIMULATION
@@ -343,55 +366,15 @@ if kml_file and lineup_file:
             surge_lead_steps=surge_lead_steps
         )
 
-        # set up path flow model
+        # build path flow configs from derived connections
         path_flow_configs = []
-        path_stage_map = {
-            "Kinetic to Circuit Path": [
-                ("Kinetic Field", "Circuit Grounds"),
-                ("Circuit Grounds", "Kinetic Field"),
-            ],
-            "Casa to Stereo": [
-                ("Casa Bacardi", "Stereo Bloom"),
-                ("Stereo Bloom", "Casa Bacardi"),
-                ("Casa Bacardi", "Circuit Grounds"),
-                ("Circuit Grounds", "Casa Bacardi"),
-            ],
-            "Casa to Stereo route 2": [
-                ("Casa Bacardi", "Stereo Bloom"),
-                ("Stereo Bloom", "Casa Bacardi"),
-                ("Stereo Bloom", "Kinetic Field"),
-                ("Kinetic Field", "Stereo Bloom"),
-            ],
-        }
         for p in grid_paths:
-            # calculate path length from waypoints
-            wp = p["waypoints"]
-            path_length = sum(
-                math.sqrt((wp[i+1][0]-wp[i][0])**2 + (wp[i+1][1]-wp[i][1])**2) * meters_per_cell
-                for i in range(len(wp)-1)
-            )
-            # path length = drawn segment + estimated distance from stages to path entry/exit
-            # the KML line only covers the middle portion; add distance from stages to path ends
-            first_wp = wp[0]
-            last_wp = wp[-1]
-            # find closest stages to each end
-            extra_start = min(
-                math.sqrt((s["x"]-first_wp[0])**2 + (s["y"]-first_wp[1])**2) * meters_per_cell
-                for s in grid_stages
-            )
-            extra_end = min(
-                math.sqrt((s["x"]-last_wp[0])**2 + (s["y"]-last_wp[1])**2) * meters_per_cell
-                for s in grid_stages
-            )
-            total_path_length = path_length + extra_start + extra_end
-            # minimum 150m — even adjacent stages have some walk
-            total_path_length = max(total_path_length, 150.0)
-            print(f"  Path '{p['name']}': segment={path_length:.0f}m + approaches={extra_start:.0f}m+{extra_end:.0f}m = total {total_path_length:.0f}m, width={p.get('width_m', 8.0):.1f}m")
+            derived = derived_lookup.get(p["name"], {})
             path_flow_configs.append({
                 "name": p["name"],
-                "length_m": total_path_length,
-                "width_m": p.get("width_m", 8.0),
-                "connects": path_stage_map.get(p["name"], []),
+                "length_m": derived.get("length_m", 150.0),
+                "width_m": derived.get("width_m", p.get("width_m", 8.0)),
+                "connects": derived.get("connects", []),
             })
 
         path_flow = PathFlowModel(path_flow_configs, scale=scale, step_duration_min=5)
@@ -747,39 +730,101 @@ if kml_file and lineup_file:
 
         # TAB 3: BOTTLENECKS
         with tab3:
-            st.subheader("Path Congestion Analysis")
-            path_cols = [c for c in df_crowd.columns if c.endswith("_density")]
+            st.subheader("⚠️ Bottleneck Report")
 
-            if path_cols:
+            # Retrieve stage_configs and timing info from session state
+            _stage_configs = st.session_state["stage_configs"]
+            _total_steps = st.session_state["total_steps"]
+            _start_hour = st.session_state["start_hour"]
+
+            # Build bottleneck events and detect crossover periods
+            bottleneck_events = build_bottleneck_events(df_crowd, _start_hour)
+            crossover_periods = detect_crossover_periods(_stage_configs, _total_steps, _start_hour)
+
+            if not bottleneck_events:
+                st.success("✅ No paths exceeded the HIGH density threshold during this simulation.")
+            else:
+                # --- Event Table with color-coded rows ---
+                st.markdown("### Bottleneck Events Timeline")
+                events_df = pd.DataFrame(bottleneck_events)
+                events_display = events_df[["path", "time", "density", "classification"]].rename(
+                    columns={
+                        "path": "Path",
+                        "time": "Time",
+                        "density": "Density (people/m²)",
+                        "classification": "Level",
+                    }
+                )
+
+                def _highlight_level(row):
+                    if row["Level"] == "CRITICAL":
+                        return ["background-color: rgba(255, 0, 0, 0.3); color: red"] * len(row)
+                    elif row["Level"] == "HIGH":
+                        return ["background-color: rgba(255, 165, 0, 0.3); color: orange"] * len(row)
+                    return [""] * len(row)
+
+                styled_df = events_display.style.apply(_highlight_level, axis=1)
+                st.dataframe(styled_df, use_container_width=True)
+
+            # --- Per-path density line chart with threshold lines and crossover bands ---
+            path_density_cols = [c for c in df_crowd.columns if c.endswith("_density")]
+
+            if path_density_cols:
+                st.markdown("### Per-Path Density Over Time")
                 fig_path = go.Figure()
-                for col in path_cols:
-                    name = col.replace("path_", "").replace("_density", "")
+
+                for col in path_density_cols:
+                    path_name = col.replace("path_", "").replace("_density", "")
                     fig_path.add_trace(go.Scatter(
                         x=df_crowd["time"], y=df_crowd[col],
-                        name=name, mode="lines", line=dict(width=2)
+                        name=path_name, mode="lines", line=dict(width=2)
                     ))
-                fig_path.add_hline(y=2.0, line_dash="dash", line_color="red",
-                                   annotation_text="Critical (2.0 people/m)")
-                fig_path.add_hline(y=1.0, line_dash="dash", line_color="orange",
-                                   annotation_text="High (1.0 people/m)")
+
+                # Horizontal threshold lines
+                fig_path.add_hline(
+                    y=DENSITY_NORMAL_MAX, line_dash="dash", line_color="orange",
+                    annotation_text="HIGH threshold",
+                    annotation_position="top left",
+                )
+                fig_path.add_hline(
+                    y=DENSITY_HIGH_MAX, line_dash="dash", line_color="red",
+                    annotation_text="CRITICAL threshold",
+                    annotation_position="top left",
+                )
+
+                # Highlight crossover periods as shaded vertical bands
+                for cp in crossover_periods:
+                    # Map crossover start/end steps to time labels for x-axis
+                    cp_start_time = step_to_time(cp["start_step"], _start_hour)
+                    cp_end_time = step_to_time(cp["end_step"], _start_hour)
+
+                    # Build label showing which set changes overlap
+                    change_labels = [f"{c['stage']}: {c['artist']}" for c in cp["set_changes"]]
+                    band_label = " / ".join(change_labels[:3])  # limit to 3 for readability
+                    if len(change_labels) > 3:
+                        band_label += f" (+{len(change_labels) - 3} more)"
+
+                    fig_path.add_vrect(
+                        x0=cp_start_time, x1=cp_end_time,
+                        fillcolor="rgba(255, 255, 0, 0.1)",
+                        line_width=0,
+                        annotation_text=band_label,
+                        annotation_position="top left",
+                        annotation_font_size=9,
+                        annotation_font_color="yellow",
+                    )
+
                 fig_path.update_layout(
-                    xaxis_title="Time", yaxis_title="People per Meter",
-                    height=400, template="plotly_dark"
+                    xaxis_title="Time",
+                    yaxis_title="Density (people/m²)",
+                    height=500,
+                    template="plotly_dark",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 )
                 st.plotly_chart(fig_path, use_container_width=True)
 
-                # worst moments
-                st.subheader("Worst Bottleneck Moments")
-                for col in path_cols:
-                    max_idx = df_crowd[col].idxmax()
-                    max_val = df_crowd[col].max()
-                    max_time = df_crowd.loc[max_idx, "time"]
-                    name = col.replace("path_", "").replace("_density", "")
-                    severity = "🔴 CRITICAL" if max_val > 2.0 else "🟠 HIGH" if max_val > 1.0 else "🟢 OK"
-                    st.markdown(f"**{name}**: Peak {max_val:.1f} people/m at {max_time} {severity}")
-
-            # transit chart
-            st.subheader("Crowd In Transit")
+            # --- Transit chart ---
+            st.markdown("### Crowd In Transit")
             fig_transit = go.Figure()
             fig_transit.add_trace(go.Scatter(
                 x=df_crowd["time"], y=df_crowd["in_transit_pct"],
