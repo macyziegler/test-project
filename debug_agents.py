@@ -1,11 +1,11 @@
 """debug_agents.py — Show where agents are at a specific step."""
 from run_edc import stage_configs, GRID_SIZE, NUM_ATTENDEES, STAGE_WEIGHTS, STAGE_WANDER_RATE
-from model_edc import FestivalModel, Attendee
-from parse_kml import parse_kml, latlon_to_grid
+from simulation.model import FestivalModel, Attendee
+from data_io.parse_kml import parse_kml, latlon_to_grid
 import numpy as np
 
-stages_geo, obstacles_geo, bounds = parse_kml("EDC Orlando Map.kml")
-grid_stages, grid_obstacles, obstacle_mask, mpc = latlon_to_grid(stages_geo, obstacles_geo, bounds, grid_size=GRID_SIZE)
+stages_geo, obstacles_geo, paths_geo, bounds, entry_exit = parse_kml("EDC Orlando Map.kml")
+grid_stages, grid_obstacles, grid_paths, obstacle_mask, mpc, entry_cells = latlon_to_grid(stages_geo, obstacles_geo, paths_geo, bounds, grid_size=GRID_SIZE)
 
 model = FestivalModel(
     GRID_SIZE, GRID_SIZE, NUM_ATTENDEES, stage_configs,
